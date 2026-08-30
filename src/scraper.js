@@ -35,7 +35,7 @@ function countRealTiles(sel) {
   if (!grid) return 0;
   return Array.from(grid.children).filter((el) => !/ghost/i.test(el.className) && hasDeepPrice(el)).length;
 }
-const { appendHistoryCsv, writeLatestJson, dumpDebugArtifact } = require('./storage');
+const { appendHistoryCsv, writeLatestJson, dumpDebugArtifact, rowsToCsv } = require('./storage');
 
 function searchUrl(term) {
   return `https://www.woolworths.com.au/shop/search/products?searchTerm=${encodeURIComponent(term)}`;
@@ -294,6 +294,18 @@ async function main() {
   if (failures.length) {
     console.warn(`[scraper] ${failures.length} term(s) failed after retries:`, failures);
   }
+
+  // There's no shell/volume access to this container after it exits (it runs
+  // once and stops, by design), so the only way to get this run's data back
+  // out is through the logs, which Railway retains and which are reachable
+  // via the API. Print the CSV between clear markers so it can be sliced back
+  // out of the log stream verbatim, one line per log line to avoid any
+  // provider-side line-length truncation on a single giant log entry.
+  console.log('===CSV_EXPORT_START===');
+  for (const line of rowsToCsv(allRows).split('\n')) {
+    console.log(line);
+  }
+  console.log('===CSV_EXPORT_END===');
 
   await browser.close();
 

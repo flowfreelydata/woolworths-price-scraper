@@ -26,6 +26,14 @@ const CSV_HEADER = [
   'url',
 ];
 
+function rowsToCsv(rows) {
+  const lines = [CSV_HEADER.join(',')];
+  for (const r of rows) {
+    lines.push(CSV_HEADER.map((k) => csvEscape(r[k])).join(','));
+  }
+  return lines.join('\n');
+}
+
 function appendHistoryCsv(rows) {
   ensureDir(config.outputDir);
   const filePath = path.join(config.outputDir, 'price_history.csv');
@@ -54,4 +62,4 @@ function dumpDebugArtifact(name, content) {
   return filePath;
 }
 
-module.exports = { appendHistoryCsv, writeLatestJson, dumpDebugArtifact, ensureDir };
+module.exports = { appendHistoryCsv, writeLatestJson, dumpDebugArtifact, ensureDir, rowsToCsv };
