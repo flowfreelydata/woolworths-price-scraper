@@ -82,12 +82,27 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
   // against skeletons. Separately, the grid is a scrollable/virtualized list,
   // so more tiles may only mount once scrolled into view — keep scrolling
   // after real content appears too, until count stops growing or we have enough.
+  //
+  // How long ghost->real takes varies a lot run to run (observed anywhere from
+  // ~10s to still-not-done past 30s) — this is real backend/network variance,
+  // not a bug, so the budget below is generous and only requires TWO
+  // consecutive unchanged readings (not one) before concluding "stopped
+  // growing", since a single stalled tick during a slow load is common.
+  const maxWaitMs = Math.max(config.resultsTimeoutMs * 2, 40000);
+  const deadline = Date.now() + maxWaitMs;
   let tileCount = 0;
-  for (let i = 0; i < 12; i++) {
+  let stableTicks = 0;
+  while (Date.now() < deadline) {
     const count = await page.evaluate(countRealTiles, GRID_SELECTOR);
-    if (count >= config.maxResultsPerTerm || (count > 0 && count === tileCount)) {
+    if (count >= config.maxResultsPerTerm) {
       tileCount = count;
       break;
+    }
+    if (count > 0 && count === tileCount) {
+      stableTicks++;
+      if (stableTicks >= 2) break;
+    } else {
+      stableTicks = 0;
     }
     tileCount = count;
     // mouse.wheel targets whatever's under the cursor, which may not be the
