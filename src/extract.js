@@ -29,6 +29,7 @@ function collectDeep(root) {
   let text = '';
   let href = null;
   let ariaLabel = null;
+  let imgSrc = null;
   const stack = [root];
 
   while (stack.length) {
@@ -50,6 +51,17 @@ function collectDeep(root) {
       if (!href && node.tagName === 'A') {
         href = node.getAttribute('href');
       }
+      if (!imgSrc && node.tagName === 'IMG') {
+        // currentSrc reflects whatever the browser actually resolved (handles
+        // srcset/lazy-load); fall back to the raw attributes lazy-loaders swap
+        // in before the real src is set.
+        const srcset = node.getAttribute('srcset') || node.getAttribute('data-srcset');
+        imgSrc =
+          node.currentSrc ||
+          node.getAttribute('src') ||
+          node.getAttribute('data-src') ||
+          (srcset ? srcset.split(',')[0].trim().split(/\s+/)[0] : null);
+      }
       if (node.shadowRoot) stack.push(node.shadowRoot);
       const cn = node.childNodes ? Array.from(node.childNodes) : [];
       for (const c of cn) stack.push(c);
@@ -60,7 +72,7 @@ function collectDeep(root) {
     }
   }
 
-  return { text: text.replace(/\s+/g, ' ').trim(), href, ariaLabel };
+  return { text: text.replace(/\s+/g, ' ').trim(), href, ariaLabel, imgSrc };
 }
 
 const EXTRACT_SCRIPT = () => {
@@ -68,6 +80,7 @@ const EXTRACT_SCRIPT = () => {
     let text = '';
     let href = null;
     let ariaLabel = null;
+    let imgSrc = null;
     const stack = [root];
     while (stack.length) {
       const node = stack.pop();
@@ -82,6 +95,14 @@ const EXTRACT_SCRIPT = () => {
           if (al) ariaLabel = al;
         }
         if (!href && node.tagName === 'A') href = node.getAttribute('href');
+        if (!imgSrc && node.tagName === 'IMG') {
+          const srcset = node.getAttribute('srcset') || node.getAttribute('data-srcset');
+          imgSrc =
+            node.currentSrc ||
+            node.getAttribute('src') ||
+            node.getAttribute('data-src') ||
+            (srcset ? srcset.split(',')[0].trim().split(/\s+/)[0] : null);
+        }
         if (node.shadowRoot) stack.push(node.shadowRoot);
         const cn = node.childNodes ? Array.from(node.childNodes) : [];
         for (const c of cn) stack.push(c);
@@ -90,11 +111,15 @@ const EXTRACT_SCRIPT = () => {
         for (const c of cn) stack.push(c);
       }
     }
-    return { text: text.replace(/\s+/g, ' ').trim(), href, ariaLabel };
+    return { text: text.replace(/\s+/g, ' ').trim(), href, ariaLabel, imgSrc };
   }
 
   const PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?/g;
   const UNIT_PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?\s*(?:per|\/)\s*[\w.]+/i;
+  // Tile aria-labels are the add-to-cart button's accessible name, e.g.
+  // "Add Karicare 1 ... 900g to cart" — strip that wrapper to get the actual
+  // product name rather than storing the button label verbatim.
+  const ADD_TO_CART_RE = /^add\s+(.+?)\s+to\s+cart$/i;
 
   const grid = document.querySelector('[data-testid="search-results-product-scrollable-content"]');
   const gridChildren = grid ? Array.from(grid.children) : [];
@@ -106,7 +131,7 @@ const EXTRACT_SCRIPT = () => {
     if (/ghost/i.test(el.className)) continue;
     consideredCount++;
 
-    const { text, href, ariaLabel } = collectDeep(el);
+    const { text, href, ariaLabel, imgSrc } = collectDeep(el);
     const combined = `${ariaLabel || ''} ${text}`;
 
     const prices = (combined.match(PRICE_RE) || []).map((p) => parseFloat(p.replace(/[^\d.]/g, '')));
@@ -117,7 +142,9 @@ const EXTRACT_SCRIPT = () => {
     if (!productId || seen.has(productId)) continue;
 
     const unitPriceMatch = combined.match(UNIT_PRICE_RE);
-    const name = (ariaLabel || text.split('.').find((l) => l.trim().length > 3) || 'Unknown product').trim();
+    const rawName = (ariaLabel || text.split('.').find((l) => l.trim().length > 3) || 'Unknown product').trim();
+    const addToCartMatch = rawName.match(ADD_TO_CART_RE);
+    const name = addToCartMatch ? addToCartMatch[1] : rawName;
 
     const currentPrice = Math.min(...prices);
     const wasPrice = prices.length > 1 ? Math.max(...prices) : null;
@@ -126,6 +153,7 @@ const EXTRACT_SCRIPT = () => {
     products.push({
       productId,
       name: name.replace(/\s+/g, ' ').trim().slice(0, 200),
+      imageUrl: imgSrc && imgSrc.startsWith('http') ? imgSrc : imgSrc ? `https://www.woolworths.com.au${imgSrc}` : null,
       url: href ? (href.startsWith('http') ? href : `https://www.woolworths.com.au${href}`) : null,
       price: currentPrice,
       wasPrice: onSpecial ? wasPrice : null,

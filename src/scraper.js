@@ -257,6 +257,7 @@ async function main() {
             search_term: term,
             product_id: p.productId,
             name: p.name,
+            image_url: p.imageUrl ?? '',
             price: p.price,
             was_price: p.wasPrice ?? '',
             on_special: p.onSpecial,
@@ -303,7 +304,11 @@ async function main() {
     try {
       await db.ensureSchema();
       const inserted = await db.insertRows(allRows);
-      console.log(`[scraper] db: ${inserted} new row(s) inserted into price_history (of ${allRows.length} scraped).`);
+      const upserted = await db.upsertProducts(allRows);
+      console.log(
+        `[scraper] db: ${inserted} new row(s) inserted into price_history, ` +
+          `${upserted} product(s) upserted into products (of ${allRows.length} scraped).`
+      );
     } catch (err) {
       console.error('[scraper] db write failed (continuing — CSV/JSON already written):', err.message);
     } finally {

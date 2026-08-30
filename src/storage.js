@@ -19,6 +19,7 @@ const CSV_HEADER = [
   'search_term',
   'product_id',
   'name',
+  'image_url',
   'price',
   'was_price',
   'on_special',
@@ -37,9 +38,21 @@ function rowsToCsv(rows) {
 function appendHistoryCsv(rows) {
   ensureDir(config.outputDir);
   const filePath = path.join(config.outputDir, 'price_history.csv');
-  const isNew = !fs.existsSync(filePath);
+  const currentHeaderLine = CSV_HEADER.join(',');
+
+  // If the file already exists but its header predates a schema change (e.g.
+  // image_url was added later), re-emit a fresh header line as a boundary
+  // rather than silently appending mismatched columns under the old one —
+  // migrate.js understands these boundaries and switches column mapping at
+  // each one, so history never gets misaligned even as the schema evolves.
+  let needsHeader = true;
+  if (fs.existsSync(filePath)) {
+    const firstLine = fs.readFileSync(filePath, 'utf8').split('\n', 1)[0];
+    needsHeader = firstLine !== currentHeaderLine;
+  }
+
   const lines = [];
-  if (isNew) lines.push(CSV_HEADER.join(','));
+  if (needsHeader) lines.push(currentHeaderLine);
   for (const r of rows) {
     lines.push(CSV_HEADER.map((k) => csvEscape(r[k])).join(','));
   }
@@ -62,4 +75,4 @@ function dumpDebugArtifact(name, content) {
   return filePath;
 }
 
-module.exports = { appendHistoryCsv, writeLatestJson, dumpDebugArtifact, ensureDir, rowsToCsv };
+module.exports = { appendHistoryCsv, writeLatestJson, dumpDebugArtifact, ensureDir, rowsToCsv, CSV_HEADER };
