@@ -1,6 +1,14 @@
 'use strict';
 
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// pg returns NUMERIC/DECIMAL columns (price, was_price, avg_price, ...) as
+// strings by default, since NUMERIC can exceed safe float precision. Prices
+// here are plain 2-decimal AUD amounts with no such risk, and every consumer
+// of this API (including Swift's `Double`-typed Codable structs) needs an
+// actual JSON number, not a quoted string — so parse NUMERIC (OID 1700)
+// globally rather than remembering to cast it at every call site.
+types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)));
 
 const DATABASE_URL = process.env.DATABASE_URL || '';
 if (!DATABASE_URL) {
@@ -32,6 +40,14 @@ const pool = new Pool({
  * the schema changes again.
  */
 async function ensureSchema() {
+  // Powers findBestProductMatch() below — the app's own curated catalog names
+  // ("Karicare Gold+ Infant Formula") don't exactly match Woolworths' raw
+  // scraped listing names ("Karicare 1 Gentle Nutrition Infant Formula From 0
+  // to 6 Months 900g"), so exact/ILIKE matching isn't good enough. Trigram
+  // similarity is a standard, low-effort way to rank "closest name" without
+  // hand-building a matching table.
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS price_history (
       id BIGSERIAL PRIMARY KEY,
@@ -69,6 +85,9 @@ async function ensureSchema() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_products_search_term ON products (search_term);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products (updated_at);`);
+  // Trigram (GIN) index so similarity search on `name` stays fast as the
+  // catalog grows, instead of a sequential scan per lookup.
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops);`);
 }
 
 const MAX_LIMIT = 500;
@@ -189,6 +208,51 @@ async function deleteProduct(productId) {
   return rowCount > 0;
 }
 
+// Below the default pg_trgm threshold (0.3) a "match" is usually two
+// unrelated products that happen to share a few common words ("Organic",
+// "100g") — better to report no match than a wrong one for a grocery price.
+const MATCH_SIMILARITY_THRESHOLD = 0.3;
+
+/**
+ * Finds the closest product in our scraped catalog to an arbitrary name from
+ * the app's own curated catalog (which uses different naming/granularity
+ * than Woolworths' raw listing names). Returns null below the similarity
+ * threshold rather than a low-confidence guess.
+ */
+async function findBestProductMatch(name) {
+  const { rows } = await pool.query(
+    `SELECT *, similarity(name, $1) AS match_score
+       FROM products
+      WHERE similarity(name, $1) >= $2
+      ORDER BY match_score DESC
+      LIMIT 1`,
+    [name, MATCH_SIMILARITY_THRESHOLD]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Weekly avg/min/max price for one product over the last `weeks` weeks,
+ * grouped by ISO week (Monday). `on_special` rows are included in the
+ * min/avg, same as what a shopper actually paid that week.
+ */
+async function getWeeklyPriceHistory(productId, weeks) {
+  const { rows } = await pool.query(
+    `SELECT
+       to_char(date_trunc('week', scraped_at), 'YYYY-MM-DD') AS week,
+       ROUND(AVG(price)::numeric, 2) AS avg_price,
+       MIN(price) AS min_price,
+       MAX(price) AS max_price
+     FROM price_history
+     WHERE product_id = $1
+       AND scraped_at >= now() - ($2 || ' weeks')::interval
+     GROUP BY date_trunc('week', scraped_at)
+     ORDER BY date_trunc('week', scraped_at) ASC`,
+    [productId, weeks]
+  );
+  return rows;
+}
+
 module.exports = {
   ensureSchema,
   listProducts,
@@ -198,4 +262,6 @@ module.exports = {
   unlockProductPrice,
   createProduct,
   deleteProduct,
+  findBestProductMatch,
+  getWeeklyPriceHistory,
 };

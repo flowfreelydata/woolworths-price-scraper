@@ -15,8 +15,19 @@
  *   POST   /products/:id/unlock      [auth] resume auto price updates from the scraper
  *   POST   /products                 [auth] add/replace a product manually
  *   DELETE /products/:id             [auth]
+ *   GET    /prices                   ?product=&suburb=&state=       (Bubstock iOS app)
+ *   GET    /prices/history           ?product=&suburb=&state=&weeks=
  *
  * [auth] routes require header `x-api-key: <API_KEY>` matching the API_KEY env var.
+ *
+ * The /prices* routes exist to match Bubstock's PriceAPIService.swift contract
+ * as-is (retailer/suburb/state fields, weekly aggregates) even though this
+ * scraper is single-retailer (Woolworths online catalog, no store/suburb-level
+ * pricing) and has no per-store granularity — `retailer` is hardcoded and
+ * suburb/state are echoed back rather than affecting the result. `product` is
+ * matched against our scraped `products.name` by trigram similarity (see
+ * db.js findBestProductMatch), since the app's own curated catalog names
+ * don't exactly match Woolworths' raw listing names.
  */
 
 const http = require('http');
@@ -82,6 +93,18 @@ function parseBoolParam(v) {
   return v === 'true' || v === '1';
 }
 
+function toNumber(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function clampWeeks(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n <= 0) return 12;
+  return Math.min(n, 52);
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const parts = url.pathname.split('/').filter(Boolean); // ['products', ':id', ...]
@@ -101,6 +124,63 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && parts[0] === 'health') {
     return sendJson(res, 200, { status: 'ok' });
+  }
+
+  // GET /prices?product=&suburb=&state=
+  if (req.method === 'GET' && parts[0] === 'prices' && parts.length === 1) {
+    const productName = url.searchParams.get('product');
+    if (!productName) return sendJson(res, 400, { error: 'product query param is required' });
+    const suburb = url.searchParams.get('suburb') || '';
+    const state = url.searchParams.get('state') || '';
+
+    const match = await db.findBestProductMatch(productName);
+    if (!match) return sendJson(res, 404, { error: 'no matching product' });
+
+    return sendJson(res, 200, {
+      productName: match.name,
+      entries: [
+        {
+          retailer: 'Woolworths',
+          storeName: 'Woolworths Online',
+          suburb,
+          state,
+          price: toNumber(match.price),
+          currency: 'AUD',
+          unit: match.unit_price || '',
+          isOnSale: match.on_special,
+          saleEndsAt: null,
+          lastUpdated: new Date(match.last_scraped_at || match.updated_at).toISOString(),
+        },
+      ],
+      fetchedAt: new Date().toISOString(),
+    });
+  }
+
+  // GET /prices/history?product=&suburb=&state=&weeks=
+  if (req.method === 'GET' && parts[0] === 'prices' && parts.length === 2 && parts[1] === 'history') {
+    const productName = url.searchParams.get('product');
+    if (!productName) return sendJson(res, 400, { error: 'product query param is required' });
+    const suburb = url.searchParams.get('suburb') || '';
+    const state = url.searchParams.get('state') || '';
+    const weeks = clampWeeks(url.searchParams.get('weeks'));
+
+    const match = await db.findBestProductMatch(productName);
+    if (!match) return sendJson(res, 404, { error: 'no matching product' });
+
+    const weekly = await db.getWeeklyPriceHistory(match.product_id, weeks);
+    return sendJson(res, 200, {
+      productName: match.name,
+      suburb,
+      state,
+      weeks: weekly.map((w) => ({
+        week: w.week,
+        retailer: 'Woolworths',
+        avg_price: toNumber(w.avg_price),
+        min_price: toNumber(w.min_price),
+        max_price: toNumber(w.max_price),
+      })),
+      fetchedAt: new Date().toISOString(),
+    });
   }
 
   if (parts[0] !== 'products') {
