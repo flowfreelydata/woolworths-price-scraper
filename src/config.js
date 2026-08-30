@@ -21,7 +21,11 @@ function parseIntEnv(val, fallback) {
 
 const config = {
   // What to search for. Comma-separated, e.g. "milk 2l,white bread,chicken breast"
-  searchTerms: parseList(process.env.SEARCH_TERMS || 'milk 2l,white bread,eggs 12 pack'),
+  // SEARCH_TERMS_EXTRA is appended on top of SEARCH_TERMS rather than folded into it,
+  // so a new category (e.g. nappies) can be added additively via a second Railway
+  // variable without ever needing to read back and re-paste the existing (long) list.
+  searchTerms: parseList(process.env.SEARCH_TERMS || 'milk 2l,white bread,eggs 12 pack')
+    .concat(parseList(process.env.SEARCH_TERMS_EXTRA || '')),
 
   // Max product rows kept per search term (the search results page is paginated;
   // we only scrape the first rendered page to keep request volume low).

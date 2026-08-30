@@ -50,7 +50,9 @@ production data pipeline that's guaranteed to never get blocked.
 ## Configuration
 
 All via env vars — see `.env.example`. The only one you'll normally touch is
-`SEARCH_TERMS`.
+`SEARCH_TERMS`. To add a new batch of terms (e.g. a whole new product category)
+without editing that list, set `SEARCH_TERMS_EXTRA` instead — it's appended on top
+at startup, so the two never need to be merged by hand.
 
 ## Run locally
 
