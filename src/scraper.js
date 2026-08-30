@@ -36,6 +36,7 @@ function countRealTiles(sel) {
   return Array.from(grid.children).filter((el) => !/ghost/i.test(el.className) && hasDeepPrice(el)).length;
 }
 const { appendHistoryCsv, writeLatestJson, dumpDebugArtifact, rowsToCsv } = require('./storage');
+const db = require('./db');
 
 function searchUrl(term) {
   return `https://www.woolworths.com.au/shop/search/products?searchTerm=${encodeURIComponent(term)}`;
@@ -293,6 +294,21 @@ async function main() {
   console.log(`[scraper] done. ${allRows.length} row(s) written to ${csvPath}`);
   if (failures.length) {
     console.warn(`[scraper] ${failures.length} term(s) failed after retries:`, failures);
+  }
+
+  // Postgres is additive, not load-bearing: CSV/JSON on the volume remain the
+  // source of truth this run either way, so a DB outage or bad DATABASE_URL
+  // must not fail (or even mark failed) a run that otherwise succeeded.
+  if (config.databaseUrl) {
+    try {
+      await db.ensureSchema();
+      const inserted = await db.insertRows(allRows);
+      console.log(`[scraper] db: ${inserted} new row(s) inserted into price_history (of ${allRows.length} scraped).`);
+    } catch (err) {
+      console.error('[scraper] db write failed (continuing — CSV/JSON already written):', err.message);
+    } finally {
+      await db.closePool().catch(() => {});
+    }
   }
 
   // There's no shell/volume access to this container after it exits (it runs

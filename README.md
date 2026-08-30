@@ -93,3 +93,17 @@ confirm it's actually getting through.
 
 `price_history.csv` columns: `scraped_at, search_term, product_id, name,
 price, was_price, on_special, unit_price, url`.
+
+## Postgres (optional)
+
+Set `DATABASE_URL` and every run also inserts its rows into a `price_history`
+table (same columns, plus a `BIGSERIAL id` so `ORDER BY id` reproduces scrape
+order, and a unique constraint on `(scraped_at, search_term, product_id)` so
+re-running never duplicates a row). Schema is created automatically on first
+run — no manual migration needed for new deployments.
+
+To backfill CSV history that predates the Postgres integration, run
+`node src/migrate.js` once against a deployment that already has
+`DATABASE_URL` set and the volume mounted — it reads the existing
+`OUTPUT_DIR/price_history.csv` and loads it in, skipping anything already
+present.

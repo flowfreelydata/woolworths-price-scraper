@@ -55,6 +55,11 @@ const config = {
   storageStatePath: process.env.STORAGE_STATE_PATH || '',
 
   userDataDebug: (process.env.DEBUG_DUMPS || 'true').toLowerCase() !== 'false',
+
+  // Optional. When set, every run's rows are also persisted to Postgres
+  // (in addition to the CSV/JSON on the volume) — see src/db.js. Left unset,
+  // the scraper behaves exactly as before (CSV/JSON only).
+  databaseUrl: process.env.DATABASE_URL || '',
 };
 
 config.storageStatePath = config.storageStatePath || `${config.outputDir}/session-state.json`;
