@@ -1,0 +1,20 @@
+{
+  "name": "woolworths-price-scraper",
+  "version": "1.0.0",
+  "description": "Search-driven Woolworths (AU) price scraper. Stealth headless browser, CSV/JSON price history.",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/scraper.js",
+  "scripts": {
+    "start": "node src/scraper.js",
+    "debug": "HEADLESS=false node src/scraper.js"
+  },
+  "dependencies": {
+    "playwright-extra": "4.3.6",
+    "puppeteer-extra-plugin-stealth": "2.11.2",
+    "playwright": "1.47.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
