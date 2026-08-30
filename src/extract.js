@@ -116,6 +116,7 @@ const EXTRACT_SCRIPT = () => {
 
   const PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?/g;
   const UNIT_PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?\s*(?:per|\/)\s*[\w.]+/i;
+  const UNIT_PRICE_RE_G = /\$\s?\d{1,4}(?:\.\d{2})?\s*(?:per|\/)\s*[\w.]+/gi;
   // Tile aria-labels are the add-to-cart button's accessible name, e.g.
   // "Add Karicare 1 ... 900g to cart" — strip that wrapper to get the actual
   // product name rather than storing the button label verbatim.
@@ -134,7 +135,18 @@ const EXTRACT_SCRIPT = () => {
     const { text, href, ariaLabel, imgSrc } = collectDeep(el);
     const combined = `${ariaLabel || ''} ${text}`;
 
-    const prices = (combined.match(PRICE_RE) || []).map((p) => parseFloat(p.replace(/[^\d.]/g, '')));
+    // Every weight/volume-priced tile also shows a unit-price phrase like
+    // "$3.78 / 100G" right next to the actual shelf price. PRICE_RE matches
+    // bare "$X.XX" anywhere, so left unfiltered that unit-price figure joins
+    // `prices` too — and since it's a per-100g/per-each figure it can land on
+    // either side of the real price depending on pack size, corrupting the
+    // min()/max() "current vs. was" logic below (observed live: a 900g tin's
+    // real $34 price got replaced by its $3.78/100g unit price, with $34
+    // mislabelled as a fake "was" price implying an ~89% discount that never
+    // existed). Strip unit-price phrases out of the text before scanning for
+    // the actual price(s) so only genuine shelf/was prices remain.
+    const withoutUnitPrices = combined.replace(UNIT_PRICE_RE_G, '');
+    const prices = (withoutUnitPrices.match(PRICE_RE) || []).map((p) => parseFloat(p.replace(/[^\d.]/g, '')));
     if (!prices.length) continue;
 
     const idMatch = (href || '').match(/(\d{4,})/);
