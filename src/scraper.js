@@ -6,13 +6,34 @@ const { EXTRACT_SCRIPT, RECON_SCRIPT, detectBlocked, GRID_SELECTOR } = require('
 
 /** Counts real (non-ghost) tiles with a price inside the results grid — the
  * one function evaluated in-browser here, kept in one place since both the
- * "wait for real content" poll and the "scroll to load more" loop need it. */
+ * "wait for real content" poll and the "scroll to load more" loop need it.
+ * Real tiles wrap a <wc-product-tile> custom element whose actual content is
+ * inside its Shadow DOM, invisible to plain .textContent — so this walks the
+ * tree (including shadow roots) rather than reading textContent directly. Must
+ * stay fully self-contained: page.evaluate() stringifies this and runs it in
+ * the browser, where it has no access to Node-side closures. */
 function countRealTiles(sel) {
+  function hasDeepPrice(node) {
+    const stack = [node];
+    const PRICE = /\$\s?\d/;
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n) continue;
+      if (n.nodeType === 3 && PRICE.test(n.textContent || '')) return true;
+      if (n.nodeType === 1) {
+        if (n.shadowRoot) stack.push(n.shadowRoot);
+        const cn = n.childNodes ? Array.from(n.childNodes) : [];
+        for (const c of cn) stack.push(c);
+      } else if (n.childNodes) {
+        for (const c of Array.from(n.childNodes)) stack.push(c);
+      }
+    }
+    return false;
+  }
+
   const grid = document.querySelector(sel);
   if (!grid) return 0;
-  const HAS_PRICE = /\$\s?\d/;
-  return Array.from(grid.children).filter((el) => !/ghost/i.test(el.className) && HAS_PRICE.test(el.textContent || ''))
-    .length;
+  return Array.from(grid.children).filter((el) => !/ghost/i.test(el.className) && hasDeepPrice(el)).length;
 }
 const { appendHistoryCsv, writeLatestJson, dumpDebugArtifact } = require('./storage');
 
@@ -113,13 +134,12 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
     if (runRecon) {
       const recon = await page.evaluate(RECON_SCRIPT).catch((e) => ({ error: e.message }));
       console.warn(
-        `[recon] grid children: ${recon.gridChildCount} total, ${recon.ghostChildCount} ghost (still loading?)`
+        `[recon] grid: ${recon.gridChildCount} children, ${recon.ghostChildCount} ghost, ` +
+          `${recon.realChildCount} real. shadowMode="${recon.shadowMode}"`
       );
-      if (recon.realTileHtml) {
-        console.warn('[recon] realTileHtml:', recon.realTileHtml);
-      } else {
-        console.warn('[recon] no non-ghost tile found — grid never finished loading in this pass');
-      }
+      (recon.sample || []).forEach((s, i) =>
+        console.warn(`[recon] sample[${i}] href="${s.href}" deepText="${s.deepTextSample}" html="${s.outerHtmlHead}"`)
+      );
     }
   }
 
