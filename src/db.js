@@ -93,6 +93,42 @@ async function ensureSchema() {
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_products_search_term ON products (search_term);`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products (updated_at);`);
+  // Composite index for the actual access pattern (one product's history, in
+  // scraped_at order / range) — the single-column idx_price_history_product
+  // above still works but forces a separate sort step as this table grows
+  // unbounded under the daily cron.
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_price_history_product_scraped ON price_history (product_id, scraped_at);`);
+
+  // One-time cleanup for rows written before the "Add X to cart" aria-label
+  // wrapper was stripped at extraction time (see extract.js ADD_TO_CART_RE) —
+  // a product that hasn't reappeared in a run since that fix shipped would
+  // otherwise sit dirty indefinitely. Idempotent: a row only matches once,
+  // then never again, so this is cheap to run on every boot.
+  await db.query(`
+    UPDATE products SET name = regexp_replace(name, '^add\\s+(.*)\\s+to\\s+cart$', '\\1', 'i')
+    WHERE name ~* '^add\\s+.*\\s+to\\s+cart$';
+  `);
+  await db.query(`
+    UPDATE price_history SET name = regexp_replace(name, '^add\\s+(.*)\\s+to\\s+cart$', '\\1', 'i')
+    WHERE name ~* '^add\\s+.*\\s+to\\s+cart$';
+  `);
+}
+
+/**
+ * Deletes price_history rows older than `days` (default ~13 months — enough
+ * for a full year-over-year comparison plus slack). The scraper runs daily
+ * forever, so without this the table grows without bound; nothing downstream
+ * (weekly aggregates, the 12-week chart) needs data this old. Run once per
+ * scraper run, after that run's own inserts, so a slow query never blocks
+ * writing this run's own data.
+ */
+async function pruneOldHistory(days = 395) {
+  const db = getPool();
+  const res = await db.query(
+    `DELETE FROM price_history WHERE scraped_at < now() - ($1 || ' days')::interval`,
+    [days]
+  );
+  return res.rowCount;
 }
 
 function toNullableNumber(v) {
@@ -214,4 +250,4 @@ async function closePool() {
   }
 }
 
-module.exports = { getPool, ensureSchema, insertRows, upsertProducts, closePool };
+module.exports = { getPool, ensureSchema, insertRows, upsertProducts, pruneOldHistory, closePool };

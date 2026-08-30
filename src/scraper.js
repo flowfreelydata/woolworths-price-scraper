@@ -305,9 +305,11 @@ async function main() {
       await db.ensureSchema();
       const inserted = await db.insertRows(allRows);
       const upserted = await db.upsertProducts(allRows);
+      const pruned = await db.pruneOldHistory();
       console.log(
         `[scraper] db: ${inserted} new row(s) inserted into price_history, ` +
-          `${upserted} product(s) upserted into products (of ${allRows.length} scraped).`
+          `${upserted} product(s) upserted into products, ${pruned} stale history row(s) pruned ` +
+          `(of ${allRows.length} scraped).`
       );
     } catch (err) {
       console.error('[scraper] db write failed (continuing — CSV/JSON already written):', err.message);

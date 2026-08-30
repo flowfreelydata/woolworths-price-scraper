@@ -88,6 +88,20 @@ async function ensureSchema() {
   // Trigram (GIN) index so similarity search on `name` stays fast as the
   // catalog grows, instead of a sequential scan per lookup.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops);`);
+  // Mirrors src/db.js in the scraper project — see that copy for the full
+  // rationale. Composite index for "one product's history in scraped_at
+  // order/range" (getProductHistory / getWeeklyPriceHistory below).
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_price_history_product_scraped ON price_history (product_id, scraped_at);`);
+  // One-time cleanup for rows written before the scraper stripped the
+  // "Add X to cart" aria-label wrapper at extraction time — idempotent.
+  await pool.query(`
+    UPDATE products SET name = regexp_replace(name, '^add\\s+(.*)\\s+to\\s+cart$', '\\1', 'i')
+    WHERE name ~* '^add\\s+.*\\s+to\\s+cart$';
+  `);
+  await pool.query(`
+    UPDATE price_history SET name = regexp_replace(name, '^add\\s+(.*)\\s+to\\s+cart$', '\\1', 'i')
+    WHERE name ~* '^add\\s+.*\\s+to\\s+cart$';
+  `);
 }
 
 const MAX_LIMIT = 500;
@@ -218,15 +232,41 @@ const MATCH_SIMILARITY_THRESHOLD = 0.3;
  * the app's own curated catalog (which uses different naming/granularity
  * than Woolworths' raw listing names). Returns null below the similarity
  * threshold rather than a low-confidence guess.
+ *
+ * Plain whole-string trigram similarity alone is not safe here: formula
+ * names are almost entirely boilerplate ("Stage 1 Infant Formula 800g"),
+ * so two *different brands* of formula can out-score the correct match on
+ * shared generic words alone (observed live: "Aptamil Gold+ Stage 1 Infant
+ * Formula" matched to a Bubs product; "a2 Platinum..." matched to a Mumamoo
+ * product — both wrong-brand). The app's query string is always "<brand>
+ * <name>" (see FoodProduct.displayName), so requiring the first token to
+ * appear somewhere in the candidate's name is a cheap, effective guard
+ * against exactly that failure mode. A single-character leading token (rare,
+ * e.g. a stray punctuation split) skips the filter rather than rejecting
+ * everything.
  */
 async function findBestProductMatch(name) {
+  const trimmed = (name || '').trim();
+  const firstWord = (trimmed.match(/^[\p{L}\p{N}][\p{L}\p{N}'-]*/u) || [])[0] || '';
+
+  const params = [trimmed, MATCH_SIMILARITY_THRESHOLD];
+  let brandClause = '';
+  // >=2 (not 3) deliberately: real brands in this catalog include "a2" and
+  // "S-26" — a 3-char minimum would silently skip the filter for exactly the
+  // two-brand-collision cases it exists to catch.
+  if (firstWord.length >= 2) {
+    params.push(`%${firstWord}%`);
+    brandClause = 'AND name ILIKE $3';
+  }
+
   const { rows } = await pool.query(
     `SELECT *, similarity(name, $1) AS match_score
        FROM products
       WHERE similarity(name, $1) >= $2
+      ${brandClause}
       ORDER BY match_score DESC
       LIMIT 1`,
-    [name, MATCH_SIMILARITY_THRESHOLD]
+    params
   );
   return rows[0] || null;
 }

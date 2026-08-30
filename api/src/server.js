@@ -36,6 +36,38 @@ const db = require('./db');
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const API_KEY = process.env.API_KEY || '';
 
+// Prices only change once a day (the scraper's cron), so re-running the
+// trigram similarity scan on every app open is pure waste — a tiny in-memory
+// cache cuts repeat Postgres/CPU load to ~zero for the common case (a handful
+// of distinct product names, hit repeatedly by one iOS app) without adding a
+// dependency like Redis. Lives in process memory only: cleared on every
+// deploy/restart, never shared across instances — correct for a single
+// low-traffic replica. TTL is deliberately shorter than the cron interval so
+// a manual price override or an unlock is never masked for more than an hour.
+const PRICE_CACHE_TTL_MS = 60 * 60 * 1000;
+const priceCache = new Map(); // key -> { body, expiresAt }
+
+function cacheGet(key) {
+  const hit = priceCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() > hit.expiresAt) {
+    priceCache.delete(key);
+    return undefined;
+  }
+  return hit.body;
+}
+
+function cacheSet(key, body) {
+  priceCache.set(key, { body, expiresAt: Date.now() + PRICE_CACHE_TTL_MS });
+  // Bound worst-case memory: this only ever holds a handful of distinct
+  // (product, suburb, state[, weeks]) combinations for one app, but a hard
+  // cap keeps it that way even if something starts sending garbage queries.
+  if (priceCache.size > 500) {
+    const oldestKey = priceCache.keys().next().value;
+    priceCache.delete(oldestKey);
+  }
+}
+
 function sendJson(res, status, body) {
   // A 204 (used for DELETE) must not carry a body per HTTP spec.
   if (status === 204) {
@@ -133,10 +165,17 @@ async function handle(req, res) {
     const suburb = url.searchParams.get('suburb') || '';
     const state = url.searchParams.get('state') || '';
 
-    const match = await db.findBestProductMatch(productName);
-    if (!match) return sendJson(res, 404, { error: 'no matching product' });
+    const cacheKey = `prices:${productName}:${suburb}:${state}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return sendJson(res, cached.status, cached.body);
 
-    return sendJson(res, 200, {
+    const match = await db.findBestProductMatch(productName);
+    if (!match) {
+      cacheSet(cacheKey, { status: 404, body: { error: 'no matching product' } });
+      return sendJson(res, 404, { error: 'no matching product' });
+    }
+
+    const body = {
       productName: match.name,
       entries: [
         {
@@ -153,7 +192,9 @@ async function handle(req, res) {
         },
       ],
       fetchedAt: new Date().toISOString(),
-    });
+    };
+    cacheSet(cacheKey, { status: 200, body });
+    return sendJson(res, 200, body);
   }
 
   // GET /prices/history?product=&suburb=&state=&weeks=
@@ -164,11 +205,18 @@ async function handle(req, res) {
     const state = url.searchParams.get('state') || '';
     const weeks = clampWeeks(url.searchParams.get('weeks'));
 
+    const cacheKey = `history:${productName}:${suburb}:${state}:${weeks}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return sendJson(res, cached.status, cached.body);
+
     const match = await db.findBestProductMatch(productName);
-    if (!match) return sendJson(res, 404, { error: 'no matching product' });
+    if (!match) {
+      cacheSet(cacheKey, { status: 404, body: { error: 'no matching product' } });
+      return sendJson(res, 404, { error: 'no matching product' });
+    }
 
     const weekly = await db.getWeeklyPriceHistory(match.product_id, weeks);
-    return sendJson(res, 200, {
+    const body = {
       productName: match.name,
       suburb,
       state,
@@ -180,7 +228,9 @@ async function handle(req, res) {
         max_price: toNumber(w.max_price),
       })),
       fetchedAt: new Date().toISOString(),
-    });
+    };
+    cacheSet(cacheKey, { status: 200, body });
+    return sendJson(res, 200, body);
   }
 
   if (parts[0] !== 'products') {
@@ -212,6 +262,7 @@ async function handle(req, res) {
       return sendJson(res, 400, { error: 'product_id and name are required' });
     }
     const product = await db.createProduct(body);
+    priceCache.clear(); // a new/replaced product could be the correct match for a cached 404
     return sendJson(res, 201, { product });
   }
 
@@ -228,6 +279,7 @@ async function handle(req, res) {
     if (!isAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
     const product = await db.unlockProductPrice(productId);
     if (!product) return sendJson(res, 404, { error: 'not found' });
+    priceCache.clear();
     return sendJson(res, 200, { product });
   }
 
@@ -257,6 +309,7 @@ async function handle(req, res) {
       unitPrice: body.unit_price,
     });
     if (!product) return sendJson(res, 404, { error: 'not found' });
+    priceCache.clear(); // this product's cached /prices entry (if any) now has the stale price
     return sendJson(res, 200, { product });
   }
 
@@ -265,6 +318,7 @@ async function handle(req, res) {
     if (!isAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
     const deleted = await db.deleteProduct(productId);
     if (!deleted) return sendJson(res, 404, { error: 'not found' });
+    priceCache.clear();
     return sendJson(res, 204, {});
   }
 
