@@ -1,24 +1,34 @@
 'use strict';
 
 /**
- * Confirmed live against woolworths.com.au (Aug 2026): each product tile in the
- * search results grid carries data-testid="search-results-product". That
- * replaced whatever URL scheme this originally anchored on (Woolworths' product
- * detail links no longer match /shop/productdetails/ — that was stale). Tiles
- * are the ground truth now; we extract name/price from inside each tile rather
- * than reverse-engineering a URL pattern that can drift again without warning.
+ * Confirmed live against woolworths.com.au (Aug 2026): the results grid lives at
+ * [data-testid="search-results-product-scrollable-content"], but "search-results-
+ * product" itself is the SECTION wrapper (only ~2 on the page, one of which is
+ * the sort/filter chip bar) — not a per-tile marker. Its children start out as
+ * loading skeletons with "ghost" in every class name (product-tile-ghost_...)
+ * and get replaced by real tiles once data loads. We treat any non-ghost direct
+ * child of the scrollable content container that contains a price as a tile,
+ * rather than depending on the real tile's own (currently unknown, and liable
+ * to drift again) class name.
  */
-const TILE_SELECTOR = '[data-testid="search-results-product"]';
+const GRID_SELECTOR = '[data-testid="search-results-product-scrollable-content"]';
 
 const EXTRACT_SCRIPT = () => {
   const PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?/g;
   const UNIT_PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?\s*(?:per|\/)\s*[\w.]+/i;
 
-  // Inlined literal, not the module-level TILE_SELECTOR const: this function is
+  // Inlined literal, not the module-level GRID_SELECTOR const: this function is
   // stringified by page.evaluate() and re-run inside the browser, which has no
   // access to Node-side closures — referencing the outer const throws
   // ReferenceError at runtime there even though it type-checks fine here.
-  const tiles = Array.from(document.querySelectorAll('[data-testid="search-results-product"]'));
+  const grid = document.querySelector('[data-testid="search-results-product-scrollable-content"]');
+  // Plain non-global test here — PRICE_RE is global and stateful (lastIndex),
+  // reusing it across filter() calls on different strings would silently skip
+  // matches depending on where the previous call left off.
+  const HAS_PRICE_RE = /\$\s?\d{1,4}(?:\.\d{2})?/;
+  const tiles = grid
+    ? Array.from(grid.children).filter((el) => !/ghost/i.test(el.className) && HAS_PRICE_RE.test(el.textContent || ''))
+    : [];
   const seen = new Set();
   const products = [];
 
@@ -142,7 +152,23 @@ const RECON_SCRIPT = () => {
     if (t && /product/i.test(t)) countsByTestid[t] = (countsByTestid[t] || 0) + 1;
   }
 
-  return { productTestids, exactMatchHtml, countsByTestid, totalTestidEls: allTestidEls.length };
+  // One real (non-ghost) tile's outerHTML, if the grid has finished loading by
+  // the time this runs — final sanity check on the actual tile markup.
+  const grid = document.querySelector('[data-testid="search-results-product-scrollable-content"]');
+  const realTile = grid ? Array.from(grid.children).find((el) => !/ghost/i.test(el.className)) : null;
+  const realTileHtml = realTile ? realTile.outerHTML.replace(/\s+/g, ' ').slice(0, 2500) : null;
+  const gridChildCount = grid ? grid.children.length : 0;
+  const ghostChildCount = grid ? Array.from(grid.children).filter((el) => /ghost/i.test(el.className)).length : 0;
+
+  return {
+    productTestids,
+    exactMatchHtml,
+    countsByTestid,
+    totalTestidEls: allTestidEls.length,
+    gridChildCount,
+    ghostChildCount,
+    realTileHtml,
+  };
 };
 
-module.exports = { EXTRACT_SCRIPT, RECON_SCRIPT, detectBlocked, TILE_SELECTOR };
+module.exports = { EXTRACT_SCRIPT, RECON_SCRIPT, detectBlocked, GRID_SELECTOR };

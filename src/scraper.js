@@ -2,7 +2,18 @@
 
 const config = require('./config');
 const { launchBrowser, newStealthContext, actLikeAHuman, humanDelay, saveSession, jitter } = require('./stealth');
-const { EXTRACT_SCRIPT, RECON_SCRIPT, detectBlocked, TILE_SELECTOR } = require('./extract');
+const { EXTRACT_SCRIPT, RECON_SCRIPT, detectBlocked, GRID_SELECTOR } = require('./extract');
+
+/** Counts real (non-ghost) tiles with a price inside the results grid — the
+ * one function evaluated in-browser here, kept in one place since both the
+ * "wait for real content" poll and the "scroll to load more" loop need it. */
+function countRealTiles(sel) {
+  const grid = document.querySelector(sel);
+  if (!grid) return 0;
+  const HAS_PRICE = /\$\s?\d/;
+  return Array.from(grid.children).filter((el) => !/ghost/i.test(el.className) && HAS_PRICE.test(el.textContent || ''))
+    .length;
+}
 const { appendHistoryCsv, writeLatestJson, dumpDebugArtifact } = require('./storage');
 
 function searchUrl(term) {
@@ -24,12 +35,12 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
     throw err;
   }
 
-  // Give the results grid time to hydrate/render before we look for it.
+  // Give the results grid container time to appear at all.
   try {
-    await page.waitForSelector(TILE_SELECTOR, { timeout: config.resultsTimeoutMs });
+    await page.waitForSelector(GRID_SELECTOR, { timeout: config.resultsTimeoutMs });
   } catch {
-    // No product tiles appeared. Could be a genuinely empty result set, or a
-    // soft block that returns 200 with a stripped page. Recheck signals.
+    // No grid appeared. Could be a genuinely empty result set, or a soft block
+    // that returns 200 with a stripped page. Recheck signals.
     const recheck = await detectBlocked(page, response);
     const html = await page.content().catch(() => '');
     dumpDebugArtifact(`no_results_${term.replace(/\W+/g, '_')}_${Date.now()}.html`, html);
@@ -38,28 +49,28 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
       err.blocked = true;
       throw err;
     }
-    console.warn(`[scrape] "${term}": no product tiles found — treating as zero results`);
+    console.warn(`[scrape] "${term}": no results grid found — treating as zero results`);
     return [];
   }
 
   await actLikeAHuman(page);
 
-  // The results grid renders as a scrollable/virtualized list (its container is
-  // literally testid'd "...-scrollable-content") — not every matching tile is
-  // necessarily in the DOM until scrolled into view. Scroll a few times to load
-  // more, stopping once we've got enough or scrolling stops adding any.
+  // The grid initially fills with loading-skeleton "ghost" tiles
+  // (product-tile-ghost_...) before real data replaces them — poll until at
+  // least one real (non-ghost) priced tile shows up, rather than extracting
+  // against skeletons. Separately, the grid is a scrollable/virtualized list,
+  // so more tiles may only mount once scrolled into view — keep scrolling
+  // after real content appears too, until count stops growing or we have enough.
   let tileCount = 0;
-  for (let i = 0; i < 8; i++) {
-    const count = await page.evaluate((sel) => document.querySelectorAll(sel).length, TILE_SELECTOR);
+  for (let i = 0; i < 12; i++) {
+    const count = await page.evaluate(countRealTiles, GRID_SELECTOR);
     if (count >= config.maxResultsPerTerm || (count > 0 && count === tileCount)) {
       tileCount = count;
       break;
     }
     tileCount = count;
     // mouse.wheel targets whatever's under the cursor, which may not be the
-    // grid's own internal scroll container (its testid literally ends in
-    // "-scrollable-content", implying a nested scrollable div rather than
-    // page-level scroll) — drive that container's scrollTop directly as well,
+    // grid's own internal scroll container — drive its scrollTop directly too,
     // since it costs nothing to try both.
     await page
       .evaluate(() => {
@@ -101,10 +112,14 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
 
     if (runRecon) {
       const recon = await page.evaluate(RECON_SCRIPT).catch((e) => ({ error: e.message }));
-      console.warn('[recon] product-related testids + counts:', JSON.stringify(recon.countsByTestid));
-      console.warn('[recon] all product-related testid names:', JSON.stringify(recon.productTestids));
-      console.warn('[recon] total elements with any data-testid:', recon.totalTestidEls);
-      (recon.exactMatchHtml || []).forEach((html, i) => console.warn(`[recon] exactMatch[${i}]:`, html));
+      console.warn(
+        `[recon] grid children: ${recon.gridChildCount} total, ${recon.ghostChildCount} ghost (still loading?)`
+      );
+      if (recon.realTileHtml) {
+        console.warn('[recon] realTileHtml:', recon.realTileHtml);
+      } else {
+        console.warn('[recon] no non-ghost tile found — grid never finished loading in this pass');
+      }
     }
   }
 
