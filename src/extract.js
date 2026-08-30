@@ -120,28 +120,29 @@ async function detectBlocked(page, response) {
  * so it reads as a whole card, not just a price span).
  */
 const RECON_SCRIPT = () => {
-  const testids = Array.from(new Set(Array.from(document.querySelectorAll('[data-testid]')).map((el) => el.getAttribute('data-testid')))).slice(0, 80);
+  const allTestidEls = Array.from(document.querySelectorAll('[data-testid]'));
+  // Every unique testid CONTAINING "product" (not exact-match only) — the exact
+  // match "search-results-product" turned out to hit only 2 elements (likely a
+  // list/section wrapper, not per-tile), so the real per-tile testid is probably
+  // a different string entirely that this substring search will surface.
+  const productTestids = Array.from(new Set(
+    allTestidEls.map((el) => el.getAttribute('data-testid')).filter((t) => t && /product/i.test(t))
+  )).slice(0, 100);
 
-  const productishLinks = Array.from(new Set(
-    Array.from(document.querySelectorAll('a[href]'))
-      .map((a) => a.getAttribute('href'))
-      .filter((h) => h && /product/i.test(h))
-  )).slice(0, 20);
+  // Full outerHTML of the exact "search-results-product" element(s), so we can
+  // see what's actually nested inside rather than guessing further.
+  const exactMatches = Array.from(document.querySelectorAll('[data-testid="search-results-product"]'));
+  const exactMatchHtml = exactMatches.map((el) => el.outerHTML.replace(/\s+/g, ' ').slice(0, 2500));
 
-  const dollarLeaf = Array.from(document.querySelectorAll('body *')).filter((el) => {
-    const txt = el.textContent || '';
-    return el.children.length <= 1 && /\$\s?\d/.test(txt) && txt.length < 30;
-  });
+  // Total count of elements whose testid contains "product", by exact testid
+  // value, so we know which one is the real per-tile repeater.
+  const countsByTestid = {};
+  for (const el of allTestidEls) {
+    const t = el.getAttribute('data-testid');
+    if (t && /product/i.test(t)) countsByTestid[t] = (countsByTestid[t] || 0) + 1;
+  }
 
-  const sampleCards = dollarLeaf.slice(0, 2).map((el) => {
-    let node = el;
-    for (let i = 0; i < 5; i++) {
-      if (node.parentElement) node = node.parentElement;
-    }
-    return node.outerHTML.replace(/\s+/g, ' ').slice(0, 1800);
-  });
-
-  return { testids, productishLinks, sampleCards, dollarLeafCount: dollarLeaf.length };
+  return { productTestids, exactMatchHtml, countsByTestid, totalTestidEls: allTestidEls.length };
 };
 
 module.exports = { EXTRACT_SCRIPT, RECON_SCRIPT, detectBlocked, TILE_SELECTOR };

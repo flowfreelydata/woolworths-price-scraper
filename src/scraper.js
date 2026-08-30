@@ -56,6 +56,18 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
       break;
     }
     tileCount = count;
+    // mouse.wheel targets whatever's under the cursor, which may not be the
+    // grid's own internal scroll container (its testid literally ends in
+    // "-scrollable-content", implying a nested scrollable div rather than
+    // page-level scroll) — drive that container's scrollTop directly as well,
+    // since it costs nothing to try both.
+    await page
+      .evaluate(() => {
+        const el = document.querySelector('[data-testid="search-results-product-scrollable-content"]');
+        if (el) el.scrollTop = el.scrollHeight;
+        window.scrollBy(0, window.innerHeight);
+      })
+      .catch(() => {});
     await page.mouse.wheel(0, jitter(600, 1000));
     await page.waitForTimeout(jitter(500, 1000));
   }
@@ -89,10 +101,10 @@ async function scrapeOneTerm(page, term, attempt, runRecon) {
 
     if (runRecon) {
       const recon = await page.evaluate(RECON_SCRIPT).catch((e) => ({ error: e.message }));
-      console.warn('[recon] data-testids:', JSON.stringify(recon.testids));
-      console.warn('[recon] product-ish links:', JSON.stringify(recon.productishLinks));
-      console.warn('[recon] dollarLeafCount:', recon.dollarLeafCount);
-      (recon.sampleCards || []).forEach((html, i) => console.warn(`[recon] sampleCard[${i}]:`, html));
+      console.warn('[recon] product-related testids + counts:', JSON.stringify(recon.countsByTestid));
+      console.warn('[recon] all product-related testid names:', JSON.stringify(recon.productTestids));
+      console.warn('[recon] total elements with any data-testid:', recon.totalTestidEls);
+      (recon.exactMatchHtml || []).forEach((html, i) => console.warn(`[recon] exactMatch[${i}]:`, html));
     }
   }
 
